@@ -294,26 +294,37 @@ def main():
     print(">> 候选中转枢纽:", hubs)
 
     if a.max_transfers >= 2:
-        # Query adjacent hub pairs once, then extend time-respecting paths with station-level continuity.
+        # 一次性建立走廊边集: 出发站->每个枢纽、每个枢纽->到达站、枢纽间相邻走廊。
+        # 一程中转只依赖前两类边, 必须无条件覆盖; 枢纽间边支持多次换乘, 预算不足时靠后截断。
         hub_codes = [L.NAME[h] for h in hubs if h in L.NAME]
-        vertices = [o_code] + list(reversed(hub_codes)) + [d_code]
-        adjacency = {code: [] for code in vertices}
-        for idx, src in enumerate(vertices[:-1]):
+        corridor = list(reversed(hub_codes))  # 按出发→到达方向排列
+        edges, seen_edges = [], set()
+
+        def add_edge(src, dst):
+            if src != dst and (src, dst) not in seen_edges:
+                seen_edges.add((src, dst))
+                edges.append((src, dst))
+
+        for h in hub_codes:
+            add_edge(o_code, h)
+            add_edge(h, d_code)
+        for idx, src in enumerate(corridor):
+            for dst in corridor[idx + 1: idx + 4]:
+                add_edge(src, dst)
+        adjacency = {code: [] for code in set([o_code, d_code] + hub_codes)}
+        for src, dst in edges:
             if BUDGET["n"] >= a.max_queries - 20: break
-            for dst in vertices[idx + 1: idx + 5] + ([d_code] if d_code not in vertices[idx + 1: idx + 5] else []):
-                if BUDGET["n"] >= a.max_queries - 20: break
-                if src == dst: continue
-                for day, low, high in windows:
-                    try:
-                        rows = query_edge(day, src, dst)
-                    except RuntimeError:
-                        break
-                    for row in rows:
-                        if has_seat(row) and low <= row["dep"] <= high:
-                            depart = dep_dt(day, row["dep"])
-                            arrive = arr_dt(depart, lishi_min(row["lishi"]))
-                            if arrive <= deadline:
-                                adjacency[src].append((row, day, depart, arrive))
+            for day, low, high in windows:
+                try:
+                    rows = query_edge(day, src, dst)
+                except RuntimeError:
+                    break
+                for row in rows:
+                    if has_seat(row) and low <= row["dep"] <= high:
+                        depart = dep_dt(day, row["dep"])
+                        arrive = arr_dt(depart, lishi_min(row["lishi"]))
+                        if arrive <= deadline:
+                            adjacency[src].append((row, day, depart, arrive))
         frontier = [(o_code, [], [], None, {o_code})]
         for depth in range(1, a.max_transfers + 2):
             following = []
