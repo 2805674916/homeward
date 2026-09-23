@@ -379,7 +379,8 @@ def main():
                             continue
                         leg = leg_info(row, day)
                         path, days = legs + [leg], dates + [day]
-                        if row["to"] == d_code:
+                        reached = row["to"] == d_code or row["to"] in city_cluster.get(d_code, ())
+                        if reached:
                             if depth >= 2:
                                 plan = make_plan("中转", path, days, city_cluster=city_cluster)
                                 if plan: plans.append(plan)
