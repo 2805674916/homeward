@@ -122,8 +122,21 @@ def _ticket_url(date, frm, to, path):
             "&leftTicketDTO.from_station=%s&leftTicketDTO.to_station=%s&purpose_codes=ADULT"
             % (path, date, frm, to))
 
+_warmed = False
+
+def warm_session():
+    """leftTicket 需要预热会话: 每进程先取一次 init 页, 等 3 秒再查, 否则返回空。"""
+    global _warmed
+    if _warmed:
+        return
+    _pace()
+    _curl(BASE + "/otn/leftTicket/init")
+    time.sleep(3.0)
+    _warmed = True
+
 def tickets(date, frm, to):
     """返回解析后的车次列表(list of dict), 已按出发时间排序。同城查询会合并返回, 行内含真实发到站。"""
+    warm_session()
     for path in list(_paths):
         try:
             j = http_json(_ticket_url(date, frm, to, path), ttl=TTL_TICKET, label="%s %s->%s" % (date, frm, to))
