@@ -1,0 +1,1 @@
+Optional province geometry is installed here as `china_adm1.geojson` by `python prepare_map.py`. The file is not distributed in the source package. Without it, the report clearly shows a station-location schematic instead of claiming to display province borders.

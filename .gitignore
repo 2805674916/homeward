@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.cache/
+*.html
+plans.json
+*.log
+cookies.txt
+station_name.js
+assets/*.geojson
+assets/china_full.json
+*.sqlite*
+.env
+.env.*
+.DS_Store

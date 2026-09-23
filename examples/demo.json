@@ -1,0 +1,10 @@
+{
+  "params": {"date": "2026-05-01", "after": "18:00", "arrive_by": "2026-05-02 12:00", "people": 1, "budget": 800},
+  "from_city": "上海", "to_city": "武汉", "generated_at": "演示数据 · 非实时余票",
+  "plans": [
+    {"type": "中转", "dep_dt": "2026-05-01 19:00:00", "arr_dt": "2026-05-02 04:00:00", "duration_min": 540, "comfort": 7.2, "transfers": [{"station": "南京南", "buffer_min": 45, "same_station": true}], "notes": ["演示方案：站点、车次、票价仅用于界面展示，不代表真实可购行程。"], "price_pp": null, "legs": [
+      {"date": "2026-05-01", "train": "示例甲", "from_cn": "上海虹桥", "to_cn": "南京南", "from": "A", "to": "B", "dep": "19:00", "arr": "20:30", "lishi": "01:30", "seats": {"二等座": "示例"}, "price": null},
+      {"date": "2026-05-01", "train": "示例乙", "from_cn": "南京南", "to_cn": "武汉", "from": "B", "to": "C", "dep": "21:15", "arr": "04:00", "lishi": "06:45", "seats": {"二等座": "示例"}, "price": null}
+    ]}
+  ]
+}
