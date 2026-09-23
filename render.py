@@ -278,7 +278,8 @@ def render(result, out_path):
                     if ll:
                         coords_ll[st] = ll
                         coords[st] = proj(ll[0], ll[1])
-    for p in result["plans"]:
+    plans_view = json.loads(json.dumps(result["plans"], ensure_ascii=False))
+    for p in plans_view:
         for leg in p["legs"]:
             v = leg.get("price")
             leg["price"] = {"v": v, "est": False} if isinstance(v, (int, float)) else None
@@ -300,7 +301,7 @@ def render(result, out_path):
                    "date": params.get("date"), "after": params.get("after"),
                    "arrive_by": params.get("arrive_by")},
         "from_city": result["from_city"], "to_city": result["to_city"],
-        "generated_at": result.get("generated_at", ""), "coords": coords, "plans": result["plans"],
+        "generated_at": result.get("generated_at", ""), "coords": coords, "plans": plans_view,
     }
     fields = {
         "__FROM__": result["from_city"], "__TO__": result["to_city"],
