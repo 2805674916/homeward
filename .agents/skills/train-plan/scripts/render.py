@@ -133,7 +133,7 @@ function cardHTML(p,i){
     const seats = Object.entries(l.seats).map(([k,v])=>`<span class="ok">${esc(k)} ${esc(v)}</span>`).join(" · ")||"—";
     const col = LEGC[j%LEGC.length];
     const pr = l.price==null? " · 待核价" : ` · <span class="pr">¥${l.price.v}</span>`;
-    const tr = j>0 && p.transfers[j-1] ? `<div class="tr"><b>${esc(p.transfers[j-1].station)}</b> 换乘 · 等${p.transfers[j-1].buffer_min}分 · ${p.transfers[j-1].same_station?"同站":"需跨站"} · 本程历时 ${durCN(legDur(l))}</div>` : "";
+    const tr = j>0 && p.transfers[j-1] ? `<div class="tr"><b>${esc(p.transfers[j-1].station)}</b> 换乘 · 等${p.transfers[j-1].buffer_min}分 · ${p.transfers[j-1].kind||(p.transfers[j-1].same_station?"同站":"需跨站")} · 本程历时 ${durCN(legDur(l))}</div>` : "";
     return (j? tr : "") + `<div class="leg"><span><span class="dotc" style="background:${col}"></span><span class="t">${esc(l.train)}</span></span>
       <span>${esc(l.from_cn)} <b class="time">${l.dep}</b> → <b class="time">${l.arr}</b> ${esc(l.alight_cn||l.to_cn)}</span>
       <span class="seat">${seats}${pr}</span></div>`;

@@ -99,6 +99,27 @@ def load_city_stations():
             by_city.setdefault(f[7], []).append((f[1], f[2]))
     return by_city
 
+def build_city_clusters(by_city, max_degree=0.35):
+    """同城且坐标相近(<=约20km)的车站归为一个换乘簇: 返回 电报码 -> 簇成员元组(含自身)。"""
+    import coords as C
+    cluster = {}
+    for stations in by_city.values():
+        if len(stations) < 2:
+            continue
+        pts = [(name, code, C.coord_of(name)) for name, code in stations]
+        for name1, code1, xy1 in pts:
+            if not xy1:
+                continue
+            members = {code1}
+            for name2, code2, xy2 in pts:
+                if code2 == code1 or not xy2:
+                    continue
+                if abs(xy1[0] - xy2[0]) + abs(xy1[1] - xy2[1]) <= max_degree:
+                    members.add(code2)
+            if len(members) > 1:
+                cluster[code1] = tuple(sorted(members))
+    return cluster
+
 def primary_station(stations):
     # 城市 主站: 与城市同名 > 东 > 南 > 第一个
     for suf in ("", "东", "南"):
@@ -124,7 +145,7 @@ def leg_info(r, date):
         "qfrom": r["qfrom"], "qto": r["qto"], "seat_types": r["seat_types"],
     }
 
-def make_plan(ptype, legs, dates, notes=(), buy_short_info=None, ext_info=None):
+def make_plan(ptype, legs, dates, notes=(), buy_short_info=None, ext_info=None, city_cluster=None):
     dep0 = dep_dt(dates[0], legs[0]["dep"])
     arrN = arr_dt(dep_dt(dates[-1], legs[-1]["dep"]), lishi_min(legs[-1]["lishi"]))
     transfers = []
@@ -133,8 +154,18 @@ def make_plan(ptype, legs, dates, notes=(), buy_short_info=None, ext_info=None):
         b = dep_dt(dates[i + 1], legs[i + 1]["dep"])
         buf = int((b - a).total_seconds() // 60)
         same = legs[i]["to"] == legs[i + 1]["from"]
+        if not same and not (city_cluster and legs[i]["to"] in city_cluster.get(legs[i + 1]["from"], ())):
+            return None  # 非同城衔接, 物理上不可达
+        if same and legs[i]["train_no"] == legs[i + 1]["train_no"]:
+            kind = "同车分段"
+        elif same:
+            kind = "同站换乘"
+        elif city_cluster and legs[i]["to"] in city_cluster.get(legs[i + 1]["from"], ()):
+            kind = "跨站换乘"
+        else:
+            kind = "需跨站"
         transfers.append({"station": L.STATION.get(legs[i]["to"], legs[i]["to"]),
-                          "buffer_min": buf, "same_station": same})
+                          "buffer_min": buf, "same_station": same, "kind": kind})
         if buf < 0:
             return None
     return {"type": ptype, "legs": legs, "dates": dates, "transfers": transfers,
@@ -228,8 +259,8 @@ def main():
     ap.add_argument("--people", type=int, default=1)
     ap.add_argument("--budget", type=float, default=None, help="单人预算(元)")
     ap.add_argument("--max-transfers", type=int, default=3)
-    ap.add_argument("--max-queries", type=int, default=100)
-    ap.add_argument("--max-hubs", type=int, default=10)
+    ap.add_argument("--max-queries", type=int, default=120)
+    ap.add_argument("--max-hubs", type=int, default=14)
     ap.add_argument("--out", default="report.html")
     a = ap.parse_args()
 
@@ -237,6 +268,7 @@ def main():
     if a.from_city not in by_city or a.to_city not in by_city:
         print("!! 城市不在站表中:", a.from_city, a.to_city); sys.exit(1)
     O = by_city[a.from_city]; D = by_city[a.to_city]
+    city_cluster = build_city_clusters(by_city)
     (o_name, o_code), (d_name, d_code) = primary_station(O), primary_station(D)
     next_day = (dt.date.fromisoformat(a.date) + dt.timedelta(days=1)).isoformat()
     windows = [(a.date, a.after, "23:59"), (next_day, "00:00", "23:59")]  # 出发日+次日全天, 由 arrive-by 兜底过滤
@@ -329,18 +361,30 @@ def main():
         for depth in range(1, a.max_transfers + 2):
             following = []
             for station, legs, dates, prior_arrival, visited in frontier:
-                for row, day, depart, arrive in adjacency.get(station, []):
-                    if row["from"] != station or row["to"] in visited: continue
-                    if prior_arrival is not None and (depart - prior_arrival).total_seconds() < 15 * 60: continue
-                    if prior_arrival is None and depart < dep_dt(a.date, a.after): continue
-                    leg = leg_info(row, day)
-                    path, days = legs + [leg], dates + [day]
-                    if row["to"] == d_code:
-                        if depth >= 2:
-                            plan = make_plan("中转", path, days)
-                            if plan: plans.append(plan)
-                    elif depth <= a.max_transfers:
-                        following.append((row["to"], path, days, arrive, visited | {row["to"]}))
+                prev = legs[-1] if legs else None
+                for member in city_cluster.get(station, (station,)):
+                    for row, day, depart, arrive in adjacency.get(member, []):
+                        if row["from"] != member or row["to"] in visited: continue
+                        if prev is not None:
+                            buffer_min = int((depart - prior_arrival).total_seconds() // 60)
+                            if member == prev["to"] and row["train_no"] == prev["train_no"]:
+                                if buffer_min < 2: continue          # 同车分段(车内换座)
+                            elif member == prev["to"]:
+                                if buffer_min < 15: continue         # 同站换乘
+                            elif member in city_cluster.get(prev["to"], ()):
+                                if buffer_min < 40: continue         # 跨站换乘(同城)
+                            else:
+                                continue                              # 非同城, 禁止
+                        elif depart < dep_dt(a.date, a.after):
+                            continue
+                        leg = leg_info(row, day)
+                        path, days = legs + [leg], dates + [day]
+                        if row["to"] == d_code:
+                            if depth >= 2:
+                                plan = make_plan("中转", path, days, city_cluster=city_cluster)
+                                if plan: plans.append(plan)
+                        elif depth <= a.max_transfers:
+                            following.append((row["to"], path, days, arrive, visited | {row["to"]}))
             frontier = following[:5000]
         dedup = {}
         for plan in plans:
