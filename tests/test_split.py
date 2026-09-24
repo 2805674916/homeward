@@ -53,6 +53,11 @@ class ParetoTests(unittest.TestCase):
         kept = search.pareto_filter([cheap_known, unknown])
         self.assertEqual(kept, [cheap_known, unknown])
 
+    def test_two_unpriced_never_compare(self):
+        a = self.plan(None, 900, 2)
+        b = self.plan(None, 400, 0)
+        self.assertEqual(search.pareto_filter([a, b]), [a, b])
+
     def test_same_train_segment_not_counted_as_transfer(self):
         p = {"transfers": [{"kind": "同车分段"}, {"kind": "同站换乘"}], "buy_short": None}
         self.assertEqual(search.plan_transfers_k(p), 1)

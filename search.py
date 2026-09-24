@@ -279,7 +279,7 @@ def pareto_filter(plans):
             if i == j:
                 continue
             dq = dims(q)
-            if (dp[0] is None) != (dq[0] is None):
+            if dp[0] is None or dq[0] is None:
                 continue
             if all(y <= x for y, x in zip(dq, dp)) and any(y < x for y, x in zip(dq, dp)):
                 dominated = True
