@@ -498,6 +498,8 @@ def main():
             iq = seq.index(L.STATION.get(r["to"], r["to"]))
         except ValueError:
             continue
+        if arr_dt(dep_dt(r["_date"], r["dep"]), lishi_min(r["lishi"])) > deadline:
+            continue  # 实际到达晚于截止, 整车跳过
         board_cn = L.STATION.get(r["from"], r["from"])
         alight_cn = L.STATION.get(r["to"], r["to"])
         for ai, bi in split_candidates(seq, ib, iq, 8):
