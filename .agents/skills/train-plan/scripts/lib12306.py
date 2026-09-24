@@ -193,7 +193,8 @@ def schedule(train_no, frm, to, date):
     out = []
     for s in rows:
         out.append({"station": s.get("station_name"), "arrive": s.get("arrive_time") or s.get("arrival_time", "--"),
-                    "depart": s.get("start_time", "--"), "stop": _int_or_0(s.get("stopover_time"))})
+                    "depart": s.get("start_time", "--"), "stop": _int_or_0(s.get("stopover_time")),
+                    "station_no": s.get("station_no")})
     return out
 
 # ---- 票价 ----

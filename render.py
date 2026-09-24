@@ -114,7 +114,7 @@ TPL = """<!DOCTYPE html>
   <div class="map-top"><span>所选行程 · 地理位置</span><span>北 ↑</span></div>
   <div id="maplegend"></div>
 </div></div>
-<div id="hint">说明：只有所有票段查得对应可购席别票价时才显示合计；缺价显示“待核价”，绝不按里程推测商务座票价。“买短乘长”方案含车上补票区间，补票段无座；“买长乘短”提前下车差价不退。地图以站点间地理示意线展示，车次和耗时在分段详情中查看，点击左侧卡片切换。购票请前往 <b>12306 官方 App/网站</b>。</div>
+<div id="hint">说明：只有所有票段查得对应可购席别票价时才显示确定合计；缺价显示“待核价”，绝不按里程推测票价。带 * 的合计含补票参考价——按 12306 同车公布票价核出，补票段为无座，以列车长补票为准。“买短乘长”方案含车上补票区间；“买长乘短”提前下车差价不退。地图以站点间地理示意线展示，车次和耗时在分段详情中查看，点击左侧卡片切换。购票请前往 <b>12306 官方 App/网站</b>。</div>
 <script>
 const DATA = __DATA__;
 const CN = {people: DATA.params.people};
@@ -140,8 +140,10 @@ function cardHTML(p,i){
       <span class="seat">${seats}${pr}</span></div>`;
   }).join("");
   const notes = (p.notes||[]).map(n=>`<div class="note">${esc(n)}</div>`).join("");
-  const pp = p.price_pp==null? "待核价" : "¥"+p.price_pp.v;
-  const tot = p.price_pp==null? (p.known_price==null?"各段未查价":"已核价 ¥"+p.known_price+"/人，非全程价") : "共 ¥"+(p.price_pp.v*CN.people).toFixed(1);
+  const pp = p.price_pp==null? (p.price_ref!=null? `¥${p.price_ref.v}<span style="font-size:11px;vertical-align:top">*</span>` : "待核价") : "¥"+p.price_pp.v;
+  const tot = p.price_pp!=null? "共 ¥"+(p.price_pp.v*CN.people).toFixed(1)
+            : p.price_ref!=null? `含补票参考 ¥${p.supp_ref.v}/人 · 共 ¥${(p.price_ref.v*CN.people).toFixed(1)}`
+            : (p.known_price==null?"各段未查价":"已核价 ¥"+p.known_price+"/人，非全程价");
   return `<div class="card ${p.over_budget?"over":""}" id="card${i}" style="--spine:${TYPE_COLOR[p.type]};animation-delay:${(i%12)*40}ms" onclick="pick(${i})">
     <div class="tk-head">
       <span class="badge b-${esc(p.type)}">${esc(p.type)}</span>
@@ -161,7 +163,7 @@ function cardHTML(p,i){
 }
 function visible(){
   let arr = DATA.plans.map((p,i)=>[p,i]).filter(([p])=>(curFt==="全部"||p.type===curFt)&&p.transfers.length<=+document.getElementById("maxTransfers").value);
-  const P = p => p.price_pp==null? 9e9 : p.price_pp.v;
+  const P = p => p.price_pp!=null? p.price_pp.v : (p.price_ref!=null? p.price_ref.v : 9e9);
   const key = {price:P, arr:p=>p.arr_dt, dur:p=>p.duration_min, comfort:p=>-p.comfort}[curSort];
   arr.sort((a,b)=>{ const x=key(a[0]),y=key(b[0]); return (typeof x==="string"?x.localeCompare(y):x-y)||a[1]-b[1]; });
   return arr;
@@ -253,7 +255,7 @@ function copyPlan(e,i){
   e.stopPropagation();
   const p=byId[i];
   const lp = l => l.price==null? " 待核价" : ` ¥${l.price.v}`;
-  const txt = p.legs.map((l,j)=>`【第${j+1}程】${l.date} ${l.train} ${l.from_cn}(${l.from})→${l.to_cn}(${l.to}) ${l.dep}-${l.arr} ${Object.entries(l.seats).map(([k,v])=>k+v).join("/")}${p.buy_short&&j===p.legs.length-1?"(后段车上补票)":""}${lp(l)}`).join("\\n")+`\\n合计约 ${p.price_pp==null?"—":(p.price_pp.est?"≈¥":"¥")+p.price_pp.v+"/人"} ×${CN.people}人`;
+  const txt = p.legs.map((l,j)=>`【第${j+1}程】${l.date} ${l.train} ${l.from_cn}(${l.from})→${l.to_cn}(${l.to}) ${l.dep}-${l.arr} ${Object.entries(l.seats).map(([k,v])=>k+v).join("/")}${p.buy_short&&j===p.legs.length-1?"(后段车上补票)":""}${lp(l)}`).join("\\n")+`\\n合计约 ${p.price_pp==null? (p.price_ref!=null? "¥"+p.price_ref.v+"/人(含补票参考¥"+p.supp_ref.v+")" : "—") : (p.price_pp.est?"≈¥":"¥")+p.price_pp.v+"/人"} ×${CN.people}人`;
   navigator.clipboard.writeText(txt).then(()=>{e.target.textContent="已复制";setTimeout(()=>e.target.textContent="复制购票信息",1500);});
 }
 document.querySelectorAll("#bar .chip[data-sort]").forEach(b=>b.onclick=()=>{document.querySelectorAll("#bar .chip[data-sort]").forEach(x=>x.classList.remove("on"));b.classList.add("on");curSort=b.dataset.sort;renderList();drawRoutes();});
@@ -288,9 +290,13 @@ def render(result, out_path):
         complete = len(quoted) == len(p["legs"]) and not p.get("buy_short")
         p["price_pp"] = {"v": round(sum(quoted), 1), "est": False} if complete else None
         p["known_price"] = round(sum(quoted), 1) if quoted else None
+        p["price_ref"] = {"v": p["price_ref"], "est": False} if isinstance(p.get("price_ref"), (int, float)) else None
+        p["supp_ref"] = {"v": p["supp_ref"]} if isinstance(p.get("supp_ref"), (int, float)) else None
+        budget_price = p["price_pp"]["v"] if p["price_pp"] else (
+            p["price_ref"]["v"] if p["price_ref"] else p["known_price"])
         p["over_budget"] = bool(params.get("budget") is not None and
-                                p["known_price"] is not None and
-                                p["known_price"] > params["budget"])
+                                budget_price is not None and
+                                budget_price > params["budget"])
 
     provs, plabels = china_svg_parts()
     if not provs:

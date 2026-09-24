@@ -67,5 +67,17 @@ class ParetoTests(unittest.TestCase):
         self.assertEqual(search.pareto_filter([a, b]), [a, b])
 
 
+class SeatPriceFallbackTests(unittest.TestCase):
+    """无座票价按铁路票价规则等于同席别公布票价(动车二等/普速硬座)。"""
+    def test_wz_falls_back_to_same_class_fare(self):
+        self.assertEqual(search._price_for_available({"O": "¥95"}, {"无座": "有"}), 95.0)
+        self.assertEqual(search._price_for_available({"WZ": "¥95", "O": "¥260"}, {"无座": "有"}), 95.0)
+        self.assertEqual(search._price_for_available({"A1": "¥30"}, {"无座": "10"}), 30.0)
+
+    def test_wz_without_any_published_fare_stays_unknown(self):
+        self.assertIsNone(search._price_for_available({"M": "¥400"}, {"无座": "有"}))
+        self.assertIsNone(search._price_for_available(None, {"无座": "有"}))
+
+
 if __name__ == '__main__':
     unittest.main()

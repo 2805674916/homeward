@@ -1,10 +1,16 @@
 {
-  "params": {"date": "2026-05-01", "after": "18:00", "arrive_by": "2026-05-02 12:00", "people": 1, "budget": 800},
+  "params": {"date": "2026-05-01", "after": "18:00", "arrive_by": "2026-05-02 12:00", "people": 2, "budget": 800},
   "from_city": "上海", "to_city": "武汉", "generated_at": "演示数据 · 非实时余票",
   "plans": [
-    {"type": "中转", "dep_dt": "2026-05-01 19:00:00", "arr_dt": "2026-05-02 04:00:00", "duration_min": 540, "comfort": 7.2, "transfers": [{"station": "南京南", "buffer_min": 45, "same_station": true}], "notes": ["演示方案：站点、车次、票价仅用于界面展示，不代表真实可购行程。"], "price_pp": null, "legs": [
-      {"date": "2026-05-01", "train": "示例甲", "from_cn": "上海虹桥", "to_cn": "南京南", "from": "A", "to": "B", "dep": "19:00", "arr": "20:30", "lishi": "01:30", "seats": {"二等座": "示例"}, "price": null},
-      {"date": "2026-05-01", "train": "示例乙", "from_cn": "南京南", "to_cn": "武汉", "from": "B", "to": "C", "dep": "21:15", "arr": "04:00", "lishi": "06:45", "seats": {"二等座": "示例"}, "price": null}
+    {"type": "直达", "dep_dt": "2026-05-01 18:36:00", "arr_dt": "2026-05-01 23:20:00", "duration_min": 284, "comfort": 7.8, "transfers": [], "notes": ["演示方案：站点、车次、票价仅用于界面展示，不代表真实可购行程。"], "legs": [
+      {"date": "2026-05-01", "train": "示例甲", "from_cn": "上海虹桥", "to_cn": "武汉", "from": "A", "to": "C", "dep": "18:36", "arr": "23:20", "lishi": "04:44", "seats": {"二等座": "有", "一等座": "12"}, "price": 456}
+    ]},
+    {"type": "买短乘长", "dep_dt": "2026-05-01 19:12:00", "arr_dt": "2026-05-02 00:40:00", "duration_min": 328, "comfort": 5.6, "transfers": [], "notes": ["演示方案：票面买到示例丙，示例丙→武汉 车上补票（无座）。", "合计含补票参考价：按 12306 同车公布票价，补票段无座"], "buy_short": {"split": "示例丙", "rest": "示例丙→武汉", "supp_ref": 96.5}, "supp_ref": 96.5, "price_ref": 416.5, "legs": [
+      {"date": "2026-05-01", "train": "示例乙", "from_cn": "上海虹桥", "to_cn": "武汉", "from": "A", "to": "C", "dep": "19:12", "arr": "00:40", "lishi": "05:28", "seats": {"二等座": "5"}, "price": 320, "alight_cn": "武汉"}
+    ]},
+    {"type": "中转", "dep_dt": "2026-05-01 19:00:00", "arr_dt": "2026-05-02 04:00:00", "duration_min": 540, "comfort": 7.2, "transfers": [{"station": "南京南", "buffer_min": 45, "same_station": true, "kind": "同站换乘"}], "notes": ["演示方案：接口未返回其中一段票价时的“待核价”形态。"], "price_pp": null, "legs": [
+      {"date": "2026-05-01", "train": "示例丙", "from_cn": "上海虹桥", "to_cn": "南京南", "from": "A", "to": "B", "dep": "19:00", "arr": "20:30", "lishi": "01:30", "seats": {"二等座": "示例"}, "price": null},
+      {"date": "2026-05-01", "train": "示例丁", "from_cn": "南京南", "to_cn": "武汉", "from": "B", "to": "C", "dep": "21:15", "arr": "04:00", "lishi": "06:45", "seats": {"二等座": "示例"}, "price": null}
     ]}
   ]
 }
