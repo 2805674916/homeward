@@ -127,16 +127,24 @@ function esc(value){ return String(value??"").replace(/[&<>"']/g,c=>c.charCodeAt
 function stars(c){ const n=Math.round(c/2); return "★".repeat(n)+"☆".repeat(5-n); }
 function durCN(m){ return Math.floor(m/60)+"小时"+String(m%60).padStart(2,"0")+"分"; }
 function legDur(l){ const [h,m]=l.lishi.split(":"); return (+h)*60+(+m); }
+function md(s){ return s? s.slice(5,10).replace("-","/") : ""; }
+function addDays(s,n){ const p=s.split("-").map(Number); const d=new Date(p[0],p[1]-1,p[2]+n); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function legArrDate(l){ const t=l.dep.split(":").map(Number), s=l.lishi.split(":").map(Number); return addDays(l.date, Math.floor((t[0]*60+t[1]+s[0]*60+s[1])/1440)); }
 function money(p){ return p==null?"—":((p.est?"≈¥":"¥")+p.v); }
 
 function cardHTML(p,i){
+  const depDate = p.dep_dt? md(String(p.dep_dt).slice(0,10)) : md(p.legs[0].date);
+  const arrDate = p.arr_dt? md(String(p.arr_dt).slice(0,10)) : md(p.legs[p.legs.length-1].date);
+  const last = p.legs[p.legs.length-1];
   const legs = p.legs.map((l,j)=>{
     const seats = Object.entries(l.seats).map(([k,v])=>`<span class="ok">${esc(k)} ${esc(v)}</span>`).join(" · ")||"—";
     const col = LEGC[j%LEGC.length];
     const pr = l.price==null? " · 待核价" : ` · <span class="pr">¥${l.price.v}</span>`;
-    const tr = j>0 && p.transfers[j-1] ? `<div class="tr"><b>${esc(p.transfers[j-1].station)}</b> 换乘 · 等${p.transfers[j-1].buffer_min}分 · ${p.transfers[j-1].kind||(p.transfers[j-1].same_station?"同站":"需跨站")} · 本程历时 ${durCN(legDur(l))}</div>` : "";
+    const crossDay = j>0 && l.date !== p.legs[j-1].date;
+    const tr = j>0 && p.transfers[j-1] ? `<div class="tr"><b>${esc(p.transfers[j-1].station)}</b> 换乘${crossDay?' · <span style="color:var(--gold)">跨天</span>':''} · 等${p.transfers[j-1].buffer_min}分 · ${p.transfers[j-1].kind||(p.transfers[j-1].same_station?"同站":"需跨站")} · 本程历时 ${durCN(legDur(l))}</div>` : "";
+    const aD = legArrDate(l);
     return (j? tr : "") + `<div class="leg"><span><span class="dotc" style="background:${col}"></span><span class="t">${esc(l.train)}</span></span>
-      <span>${esc(l.from_cn)} <b class="time">${l.dep}</b> → <b class="time">${l.arr}</b> ${esc(l.alight_cn||l.to_cn)}</span>
+      <span><b class="date">${md(l.date)}</b> ${esc(l.from_cn)} <b class="time">${l.dep}</b> → ${aD!==l.date? `<b class="date">${md(aD)}</b>`:""} <b class="time">${l.arr}</b> ${esc(l.alight_cn||l.to_cn)}</span>
       <span class="seat">${seats}${pr}</span></div>`;
   }).join("");
   const notes = (p.notes||[]).map(n=>`<div class="note">${esc(n)}</div>`).join("");
@@ -148,7 +156,7 @@ function cardHTML(p,i){
     <div class="tk-head">
       <span class="badge b-${esc(p.type)}">${esc(p.type)}</span>
       ${p.legs.map(l=>`<span class="train">${esc(l.train)}</span>`).join('<span style="color:var(--mut)">→</span>')}
-      <span class="dur">${esc(p.legs[0].from_cn)} ${p.legs[0].dep} → ${esc(p.legs[p.legs.length-1].alight_cn||p.legs[p.legs.length-1].to_cn)} <b class="time">${p.legs[p.legs.length-1].arr}</b> · ${durCN(p.duration_min)}</span>
+      <span class="dur">${esc(p.legs[0].from_cn)} <b class="date">${depDate}</b> ${p.legs[0].dep} → ${esc(last.alight_cn||last.to_cn)} ${arrDate!==depDate? `<b class="date">${arrDate}</b>`:""} <b class="time">${last.arr}</b> · ${durCN(p.duration_min)}</span>
       <div class="price"><div class="pp">${pp}</div><div class="tot">${p.price_pp?"/人 · ":""}${tot}</div></div>
     </div>
     <div class="tk-body">${legs}</div>
@@ -227,7 +235,7 @@ function legend(p){
     p.legs.map((l,j)=>{
       const to=l.alight_cn||l.to_cn;
       const suffix=j<p.legs.length-1?`<small>在 ${esc(to)} 换乘 · ${p.transfers[j]?.buffer_min??"—"} 分钟</small>`:`<small>抵达 ${esc(to)}</small>`;
-      return `<div class="route-index-row"><span class="route-index-num">${j+1}—${j+2}</span><span class="sw" style="background:${LEGC[j%LEGC.length]}"></span><div><b>${esc(l.train)}</b> ${esc(l.from_cn)} → ${esc(to)}${suffix}</div></div>`;
+      return `<div class="route-index-row"><span class="route-index-num">${j+1}—${j+2}</span><span class="sw" style="background:${LEGC[j%LEGC.length]}"></span><div><b>${esc(l.train)}</b> <span class="date">${md(l.date)}</span> ${esc(l.from_cn)} → ${esc(to)}${suffix}</div></div>`;
     }).join("")+
     `<div class="route-index-actions"><button class="cp" onclick="zoomTo('route')">聚焦线路</button><button class="cp" onclick="zoomTo('full')">全国视野</button></div>`;
 }
