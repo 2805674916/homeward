@@ -120,7 +120,7 @@ const DATA = __DATA__;
 const CN = {people: DATA.params.people};
 const TYPE_COLOR = {"直达":"#1d6b45","中转":"#1d5fa8","买短乘长":"#b45309","买长乘短":"#6d28d9","买长又买短":"#a94332"};
 const LEGC = ["#1d5fa8","#1d6b45","#b45309","#7c3aed","#c0392b","#0e7490","#be185d","#4d7c0f"];
-let curSort="price", curFt="全部", sel=-1;
+let curSort="price", curFt="全部", sel=-1, legendCollapsed=false;
 const byId = {}; DATA.plans.forEach((p,i)=>byId[i]=p);
 function coord(st){ return DATA.coords[st]||null; }
 function esc(value){ return String(value??"").replace(/[&<>"']/g,c=>c.charCodeAt(0)===34?"&quot;":({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;"}[c])); }
@@ -231,13 +231,21 @@ function drawStops(p){
 function legend(p){
   const lg=document.getElementById("maplegend");
   const stations=[p.legs[0].from_cn,...p.legs.map(l=>l.alight_cn||l.to_cn)];
-  lg.innerHTML=`<div class="legend-head"><strong>沿途车次与换乘</strong><span>${p.transfers.length} 次换乘</span></div>`+
+  lg.innerHTML=`<div class="legend-head"><strong>沿途车次与换乘</strong><span>${p.transfers.length} 次换乘</span><button class="cp" id="legendToggle">${legendCollapsed?"展开图例":"收起图例"}</button></div>`+
     p.legs.map((l,j)=>{
       const to=l.alight_cn||l.to_cn;
       const suffix=j<p.legs.length-1?`<small>在 ${esc(to)} 换乘 · ${p.transfers[j]?.buffer_min??"—"} 分钟</small>`:`<small>抵达 ${esc(to)}</small>`;
       return `<div class="route-index-row"><span class="route-index-num">${j+1}—${j+2}</span><span class="sw" style="background:${LEGC[j%LEGC.length]}"></span><div><b>${esc(l.train)}</b> <span class="date">${md(l.date)}</span> ${esc(l.from_cn)} → ${esc(to)}${suffix}</div></div>`;
     }).join("")+
     `<div class="route-index-actions"><button class="cp" onclick="zoomTo('route')">聚焦线路</button><button class="cp" onclick="zoomTo('full')">全国视野</button></div>`;
+  if(legendCollapsed) lg.classList.add("collapsed");
+  document.getElementById("legendToggle").onclick=(e)=>{
+    e.stopPropagation();
+    legendCollapsed=!legendCollapsed;
+    lg.classList.toggle("collapsed",legendCollapsed);
+    e.target.textContent=legendCollapsed?"展开图例":"收起图例";
+    zoomTo(zoomMode);
+  };
 }
 let zoomMode = "route";
 function zoomTo(mode){
@@ -247,8 +255,8 @@ function zoomTo(mode){
   if(!pts.length)return;
   const xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]);
   const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
-  const box=document.getElementById("mapbox");
-  const aspect=box.clientWidth/Math.max(1,box.clientHeight);
+  const svgEl=document.getElementById("cmap");
+  const aspect=svgEl.clientWidth/Math.max(1,svgEl.clientHeight);
   let w=Math.max(210,x1-x0+180),h=Math.max(170,y1-y0+140);
   if(w/h<aspect)w=h*aspect;else h=w/aspect;
   svg.setAttribute("viewBox",`${(x0+x1-w)/2} ${(y0+y1-h)/2} ${w} ${h}`);
