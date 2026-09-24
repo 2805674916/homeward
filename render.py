@@ -98,6 +98,7 @@ TPL = """<!DOCTYPE html>
   <button class="chip" data-ft="中转">中转</button>
   <button class="chip" data-ft="买短乘长">买短乘长</button>
   <button class="chip" data-ft="买长乘短">买长乘短</button>
+  <button class="chip" data-ft="买长又买短">买长又买短</button>
 
   <label style="font-size:12px;color:var(--mut)">换乘不超过 <select id="maxTransfers" aria-label="最多换乘次数"><option value="3" selected>3 次</option><option value="0">0 次</option><option value="1">1 次</option><option value="2">2 次</option></select></label>
   <span style="color:var(--mut);font-size:12px">共 <b id="cnt"></b> 个方案 · 生成于 __GEN__</span>
@@ -117,7 +118,7 @@ TPL = """<!DOCTYPE html>
 <script>
 const DATA = __DATA__;
 const CN = {people: DATA.params.people};
-const TYPE_COLOR = {"直达":"#1d6b45","中转":"#1d5fa8","买短乘长":"#b45309","买长乘短":"#6d28d9"};
+const TYPE_COLOR = {"直达":"#1d6b45","中转":"#1d5fa8","买短乘长":"#b45309","买长乘短":"#6d28d9","买长又买短":"#a94332"};
 const LEGC = ["#1d5fa8","#1d6b45","#b45309","#7c3aed","#c0392b","#0e7490","#be185d","#4d7c0f"];
 let curSort="price", curFt="全部", sel=-1;
 const byId = {}; DATA.plans.forEach((p,i)=>byId[i]=p);

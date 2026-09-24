@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
 """
 train-plan 图搜索: 在铁路走廊图上枚举 直达 / 中转 / 买长乘短 / 买短乘长 方案
+候选段模型: e=(j, r, q, a, b) —— 车次 j 实际乘坐 r→q, 购票区间 a→b, 约束 a<=r<b 且区间当前可购。
+  b<q 为买短乘长(车上补票, 补票费 12306 无公开接口, 不计总价);
+  a<r 为买长乘短(票面覆盖上车站, 保证能上车); 两者同时成立为买长又买短。
+换乘约束: 同车分段 τ=2min(不计换乘次数) / 同站 τ=15min / 同城簇跨站 τ=40min / 其余禁止。
 用法示例:
   python search.py --from-city 上海 --to-city 武汉 --date YYYY-MM-DD --after 18:00 \
-      --arrive-by "YYYY-MM-DD 12:00" --people 1 --budget 800 --out report.html
-约束: 受 --max-queries 限制(防风控), lib12306 自带限速+缓存。
+      --arrive-by "YYYY-MM-DD 12:00" --people 2 --budget 800 --out report.html
+查询预算默认 260 次(串行限速 3 秒/次, 全程约 15 分钟), 可用 --max-queries 调整。
 """
 import argparse, datetime as dt, json, os, sys, time
 
@@ -19,7 +23,9 @@ SEAT_CN = {"sw": "商务座", "zy": "一等座", "ze": "二等座", "yw": "硬�
            "rw": "软卧", "gr": "高级软卧", "wz": "无座"}
 SEAT_COMFORT = {"sw": 1.0, "gr": 0.8, "zy": 0.6, "rw": 0.5, "yw": 0.3, "ze": 0.2, "yz": -0.6, "wz": -1.8}
 BUDGET = {"n": 0}
-PRICE_CACHE = {}
+FARES_RESERVE = 50          # 留给票价核验的查询额度
+EDGE_RESERVE = FARES_RESERVE + 60
+TRANSFER_FLOOR = {"同车分段": 2, "同站换乘": 15, "跨站换乘": 40}
 
 def qbudget(max_q):
     BUDGET["n"] += 1
@@ -34,14 +40,34 @@ def sched(train_no, frm, to, date, max_q):
     qbudget(max_q)
     return L.schedule(train_no, frm, to, date)
 
-def seat_val(v):
-    return None if v in ("", "无") else ("候补" if v == "候补" else v)
+def seat_count(v):
+    """余票张数: '有' 视为充足; 候补/无/空 不可购。"""
+    if v == "有":
+        return 99
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return 0
 
 def row_seats(r):
     return {k: seat_val(r[k]) for k in SEATS if r.get(k) not in (None, "", "无", "候补", "0", 0)}
 
-def has_seat(r, classes=("ze", "yw", "yz", "rw", "zy", "sw", "gr", "wz")):
-    return r["buy"] == "Y" and any(r.get(k) not in (None, "", "无", "候补", "0", 0) for k in classes)
+def seat_val(v):
+    return None if v in ("", "无") else ("候补" if v == "候补" else v)
+
+def has_seat(r, people=1, classes=SEATS):
+    """当前可直接购买, 且可买张数合计覆盖 people(不同席别可拆单购买)。"""
+    if r["buy"] != "Y":
+        return False
+    total = 0
+    for k in classes:
+        v = r.get(k)
+        if v in (None, "", "无", "候补"):
+            continue
+        total += seat_count(v)
+        if total >= people:
+            return True
+    return total >= people
 
 def parse_hhmm(s):
     h, m = s.split(":")
@@ -55,6 +81,9 @@ def dep_dt(date, hhmm):
     d = dt.date.fromisoformat(date)
     mins = parse_hhmm(hhmm)
     return dt.datetime.combine(d, dt.time()) + dt.timedelta(minutes=mins)
+
+def arr_dt(dep, lishi):
+    return dep + dt.timedelta(minutes=lishi)
 
 def corridor_hubs(o_city, d_city, cap=14):
     """用站点坐标挑出 O→D 走廊带内的候选枢纽: 按城市去重(优先 东 站), 离目的地由近到远"""
@@ -85,9 +114,6 @@ def corridor_hubs(o_city, d_city, cap=14):
             return m[0] if m else None
         best[city] = pref("东") or pref("南") or pref("北") or st
     return [best[c] for c in sorted(best, key=lambda c: -max(t for t, cc, s in cand if cc == c))][:cap]
-
-def arr_dt(dep, lishi):
-    return dep + dt.timedelta(minutes=lishi)
 
 # ---------- 城市展开 ----------
 def load_city_stations():
@@ -121,12 +147,6 @@ def build_city_clusters(by_city, max_degree=0.35):
     return cluster
 
 def primary_station(stations):
-    # 城市 主站: 与城市同名 > 东 > 南 > 第一个
-    for suf in ("", "东", "南"):
-        for name, code in stations:
-            if name.endswith(suf) and (suf or name == name):
-                if suf == "" or True:
-                    pass
     name0, code0 = stations[0]
     for suf in ("东", "南"):
         for name, code in stations:
@@ -154,8 +174,6 @@ def make_plan(ptype, legs, dates, notes=(), buy_short_info=None, ext_info=None, 
         b = dep_dt(dates[i + 1], legs[i + 1]["dep"])
         buf = int((b - a).total_seconds() // 60)
         same = legs[i]["to"] == legs[i + 1]["from"]
-        if not same and not (city_cluster and legs[i]["to"] in city_cluster.get(legs[i + 1]["from"], ())):
-            return None  # 非同城衔接, 物理上不可达
         if same and legs[i]["train_no"] == legs[i + 1]["train_no"]:
             kind = "同车分段"
         elif same:
@@ -163,11 +181,11 @@ def make_plan(ptype, legs, dates, notes=(), buy_short_info=None, ext_info=None, 
         elif city_cluster and legs[i]["to"] in city_cluster.get(legs[i + 1]["from"], ()):
             kind = "跨站换乘"
         else:
-            kind = "需跨站"
+            return None  # 非同城衔接, 物理上不可达
+        if buf < TRANSFER_FLOOR[kind]:
+            return None  # 换乘时间不足
         transfers.append({"station": L.STATION.get(legs[i]["to"], legs[i]["to"]),
                           "buffer_min": buf, "same_station": same, "kind": kind})
-        if buf < 0:
-            return None
     return {"type": ptype, "legs": legs, "dates": dates, "transfers": transfers,
             "dep_dt": dep0.isoformat(sep=" "), "arr_dt": arrN.isoformat(sep=" "),
             "duration_min": int((arrN - dep0).total_seconds() // 60),
@@ -211,42 +229,64 @@ def _price_for_available(d_price, seats_avail):
                 candidates.append(number)
     return min(candidates) if candidates else None
 
-def price_legs(plan, date_keys, max_q):
-    """按每段【实际可买席别】取价; 单段失败重试(绕缓存); 全成才算有价"""
-    total = 0.0
-    ok = True
-    for leg in plan["legs"]:
-        key = (leg["train_no"], leg["qfrom"], leg["qto"], leg["seat_types"], leg["date"], tuple(sorted(leg["seats"].items())))
-        p = PRICE_CACHE.get(key)
-        for attempt in range(0 if p is not None else 2):
-            try:
-                if attempt == 0:
-                    qbudget(max_q)
-                    d = L.price(leg["train_no"], leg["qfrom"], leg["qto"], leg["seat_types"], leg["date"])
-                else:
-                    time.sleep(1.2)
-                    qbudget(max_q)
-                    url = (L.BASE + "/otn/leftTicket/queryTicketPrice?train_no=%s&from_station_no=%s"
-                           "&to_station_no=%s&seat_types=%s&train_date=%s"
-                           % (leg["train_no"], leg["qfrom"], leg["qto"], leg["seat_types"], leg["date"]))
-                    d = L.http_json(url, ttl=0, label="票价重试 " + leg["train_no"]).get("data")
-                if d:
-                    p = _price_for_available(d, leg["seats"])
-            except RuntimeError:
-                ok = False
+# ---------- 候选段枚举(纯函数, 可单测) ----------
+def classify_split(ai, bi, i_board, i_alight):
+    """购票区间 (ai,bi) 对实际乘坐 (i_board,i_alight) 的方案类型。"""
+    supp = bi < i_alight        # 买短乘长: 车上补票
+    long_a = ai < i_board       # 票面起点早于上车站
+    if supp and long_a:
+        return "买长又买短"
+    if supp:
+        return "买短乘长"
+    return "买长乘短"
+
+def split_candidates(seq, i_board, i_alight, max_attempts=8):
+    """有界枚举购票区间候选 (a_idx,b_idx): 票面覆盖上车站 a<=r<b, 补票最短/保上车站优先。"""
+    out, seen = [], set()
+    last = len(seq) - 1
+    def add(ai, bi):
+        if (ai, bi) in seen or (ai, bi) == (i_board, i_alight):
+            return
+        if not (0 <= ai <= i_board < bi <= last):
+            return
+        seen.add((ai, bi))
+        out.append((ai, bi))
+    add(i_board, i_alight - 1)   # 补最后一小段
+    add(i_board, i_alight + 1)   # 买到下一站提前下
+    add(i_board - 1, i_alight)   # 前一站买, 保上车站
+    add(i_board, last)           # 买到终点
+    add(i_board, i_board + 1)    # 最近站短买
+    add(i_board, (i_board + i_alight) // 2)
+    add(i_board - 2, i_alight)
+    add(i_board - 1, last)
+    add(i_board - 1, i_alight - 1)
+    return out[:max_attempts]
+
+def plan_transfers_k(plan):
+    """模型意义上的换乘数: 同车分段不计。"""
+    return sum(1 for t in plan["transfers"] if t.get("kind") != "同车分段")
+
+def pareto_filter(plans):
+    """按 (票价, 历时, 换乘数, 补票标志) 剔除被支配方案; 未核价方案不与已核价方案互比。"""
+    def dims(p):
+        return (p.get("price_pp"), p["duration_min"], plan_transfers_k(p),
+                1 if p.get("buy_short") else 0)
+    keep = []
+    for i, p in enumerate(plans):
+        dp = dims(p)
+        dominated = False
+        for j, q in enumerate(plans):
+            if i == j:
+                continue
+            dq = dims(q)
+            if (dp[0] is None) != (dq[0] is None):
+                continue
+            if all(y <= x for y, x in zip(dq, dp)) and any(y < x for y, x in zip(dq, dp)):
+                dominated = True
                 break
-            if p is not None:
-                break
-        if p is None:
-            ok = False
-            continue
-        leg["price"] = p
-        PRICE_CACHE[key] = p
-        total += p
-    if ok and total > 0 and not plan.get("buy_short"):
-        plan["price_pp"] = round(total, 1)
-    plan["prices"] = [leg.get("price") for leg in plan["legs"]]
-    return plan
+        if not dominated:
+            keep.append(p)
+    return keep
 
 # ---------- 主搜索 ----------
 def main():
@@ -259,7 +299,7 @@ def main():
     ap.add_argument("--people", type=int, default=1)
     ap.add_argument("--budget", type=float, default=None, help="单人预算(元)")
     ap.add_argument("--max-transfers", type=int, default=3)
-    ap.add_argument("--max-queries", type=int, default=120)
+    ap.add_argument("--max-queries", type=int, default=260)
     ap.add_argument("--max-hubs", type=int, default=14)
     ap.add_argument("--out", default="report.html")
     a = ap.parse_args()
@@ -281,11 +321,15 @@ def main():
             network_rows[key] = tickets(day, frm, to, a.max_queries)
         return network_rows[key]
 
-    def in_window(date, dep, arrive_by_dt=None):
-        return dep_dt(date, dep)
+    stops_cache = {}
+    def train_stops(train_no, frm, to, day):
+        key = (train_no, day)
+        if key not in stops_cache:
+            stops_cache[key] = sched(train_no, frm, to, day, a.max_queries)
+        return [s["station"] for s in stops_cache[key]]
 
     # ---- 0. 直达 ----
-    print(">> 直达扫描 %s(%s)→%s(%s)" % (o_name, o_code, d_name, d_code))
+    print(">> 直达扫描 %s(%s)→%s(%s), 按 %d 人核验余票" % (o_name, o_code, d_name, d_code, a.people))
     direct_rows = []
     for w_date, w_from, w_to in windows:
         rows = query_edge(w_date, o_code, d_code)
@@ -294,13 +338,13 @@ def main():
                 r2 = dict(r); r2["_date"] = w_date
                 direct_rows.append(r2)
     for r in direct_rows:
-        if r["dep"] < a.after and r["_date"] == a.date: continue
         dep = dep_dt(r["_date"], r["dep"])
         if dep < dt.datetime.combine(dt.date.fromisoformat(a.date), dt.time()) + dt.timedelta(minutes=parse_hhmm(a.after)): continue
         arr = arr_dt(dep, lishi_min(r["lishi"]))
         if arr > deadline: continue
-        if has_seat(r):
+        if has_seat(r, a.people):
             plans.append(make_plan("直达", [leg_info(r, r["_date"])], [r["_date"]]))
+    plans = [p for p in plans if p]
     print("   直达可行: %d" % len(plans))
 
     # ---- 中转 hub 采集: 时刻表中间站 + 坐标走廊内插(双保险, 不依赖单一数据源) ----
@@ -313,21 +357,51 @@ def main():
             continue
         seq = [s["station"] for s in stops]
         try:
-            i0 = seq.index(r["from"]); i1 = seq.index(r["to"])
+            i0 = seq.index(L.STATION.get(r["from"], r["from"]))
+            i1 = seq.index(L.STATION.get(r["to"], r["to"]))
         except ValueError:
             continue
         for h in seq[i0 + 1: i1]:
             hub_freq[h] = hub_freq.get(h, 0) + 1
     sched_hubs = [h for h, _ in sorted(hub_freq.items(), key=lambda kv: -kv[1])]
     geo_hubs = corridor_hubs(a.from_city, a.to_city)
-    # 目的地侧枢纽必须保留(拆分段最有价值), 再补时刻表高频枢纽, 再补其余地理枢纽
     merged = list(dict.fromkeys(list(geo_hubs[:3]) + sched_hubs + list(geo_hubs[3:])))[: max(a.max_hubs, 6)]
     hubs = merged
     print(">> 候选中转枢纽:", hubs)
 
-    if a.max_transfers >= 2:
-        # 一次性建立走廊边集: 出发站->每个枢纽、每个枢纽->到达站、枢纽间相邻走廊。
-        # 一程中转只依赖前两类边, 必须无条件覆盖; 枢纽间边支持多次换乘, 预算不足时靠后截断。
+    # ---- 拆票工具: 候选段 e=(j,r,q,a,b) 的购票区间尝试 ----
+    def attempt_split_leg(full, day, seq, ai, bi):
+        """查询购票区间 seq[ai]→seq[bi] 上该车次是否可购; 命中返回 (leg, a_name, b_name)。
+        leg 的 dep/arr/lishi/from/to 已覆盖为实际乘坐区间, qfrom/qto 保留票面区间供核价。"""
+        a_name, b_name = seq[ai], seq[bi]
+        a_code, b_code = L.NAME.get(a_name), L.NAME.get(b_name)
+        if not a_code or not b_code or a_code == b_code:
+            return None
+        rows = query_edge(day, a_code, b_code)   # 预算耗尽会抛 RuntimeError
+        hit = next((x for x in rows if x["train_no"] == full["train_no"]
+                    and has_seat(x, a.people)), None)
+        if hit is None:
+            return None
+        leg = leg_info(hit, day)
+        leg["from"], leg["to"] = full["from"], full["to"]
+        leg["from_cn"] = L.STATION.get(full["from"], full["from"])
+        leg["to_cn"] = L.STATION.get(full["to"], full["to"])
+        leg["dep"], leg["arr"], leg["lishi"] = full["dep"], full["arr"], full["lishi"]
+        return leg, a_name, b_name
+
+    def split_notes(a_name, b_name, board_cn, alight_cn, ai, bi, ib, iq):
+        out = []
+        if ai < ib:
+            out.append("票面 %s→%s：在 %s 上车（票面起点早于实际上车站，保证有票可乘）" % (a_name, b_name, board_cn))
+        if bi < iq:
+            out.append("票面买到 %s，%s→%s 车上补票（无座，按公布票价，风险自担）" % (b_name, b_name, alight_cn))
+        if bi > iq:
+            out.append("票面买到 %s，在 %s 提前下车（差价不退）" % (b_name, alight_cn))
+        return out
+
+    # ---- 1. 走廊边装载 + 时序 BFS(同车分段不计换乘次数) ----
+    soldout = {}
+    if a.max_transfers >= 1:
         hub_codes = [L.NAME[h] for h in hubs if h in L.NAME]
         corridor = list(reversed(hub_codes))  # 按出发→到达方向排列
         edges, seen_edges = [], set()
@@ -343,28 +417,38 @@ def main():
         for idx, src in enumerate(corridor):
             for dst in corridor[idx + 1: idx + 4]:
                 add_edge(src, dst)
-        adjacency = {code: [] for code in set([o_code, d_code] + hub_codes)}
+        adjacency = {}  # 按实际上车站(电报码)存行: 同城合并查询的行可能从簇内任一站发车
         for src, dst in edges:
-            if BUDGET["n"] >= a.max_queries - 20: break
+            if BUDGET["n"] >= a.max_queries - EDGE_RESERVE: break
             for day, low, high in windows:
                 try:
                     rows = query_edge(day, src, dst)
                 except RuntimeError:
                     break
+                pool = soldout.setdefault((src, dst), [])
                 for row in rows:
-                    if has_seat(row) and low <= row["dep"] <= high:
-                        depart = dep_dt(day, row["dep"])
-                        arrive = arr_dt(depart, lishi_min(row["lishi"]))
-                        if arrive <= deadline:
-                            adjacency[src].append((row, day, depart, arrive))
-        frontier = [(o_code, [], [], None, {o_code})]
-        for depth in range(1, a.max_transfers + 2):
+                    if not (low <= row["dep"] <= high):
+                        continue
+                    depart = dep_dt(day, row["dep"])
+                    arrive = arr_dt(depart, lishi_min(row["lishi"]))
+                    if arrive > deadline:
+                        continue
+                    if has_seat(row, a.people):
+                        adjacency.setdefault(row["from"], []).append((row, day, depart, arrive))
+                    elif len(pool) < 3:
+                        pool.append((row, day))
+
+        # BFS: 状态 (站, legs, dates, 前段到达, visited, 已用换乘数k) —— k 只在更换车次时 +1
+        frontier = [(o_code, [], [], None, frozenset([o_code]), 0)]
+        leg_cap = a.max_transfers + 3
+        while frontier:
             following = []
-            for station, legs, dates, prior_arrival, visited in frontier:
+            for station, legs, dates, prior_arrival, visited, kch in frontier:
                 prev = legs[-1] if legs else None
                 for member in city_cluster.get(station, (station,)):
                     for row, day, depart, arrive in adjacency.get(member, []):
                         if row["from"] != member or row["to"] in visited: continue
+                        nk = kch
                         if prev is not None:
                             buffer_min = int((depart - prior_arrival).total_seconds() // 60)
                             if member == prev["to"] and row["train_no"] == prev["train_no"]:
@@ -375,131 +459,157 @@ def main():
                                 if buffer_min < 40: continue         # 跨站换乘(同城)
                             else:
                                 continue                              # 非同城, 禁止
+                            if row["train_no"] != prev["train_no"]:
+                                nk += 1
+                                if nk > a.max_transfers: continue
                         elif depart < dep_dt(a.date, a.after):
                             continue
                         leg = leg_info(row, day)
                         path, days = legs + [leg], dates + [day]
+                        if len(path) > leg_cap: continue
                         reached = row["to"] == d_code or row["to"] in city_cluster.get(d_code, ())
                         if reached:
-                            if depth >= 2:
+                            if len(path) >= 2:
                                 plan = make_plan("中转", path, days, city_cluster=city_cluster)
                                 if plan: plans.append(plan)
-                        elif depth <= a.max_transfers:
-                            following.append((row["to"], path, days, arrive, visited | {row["to"]}))
-            frontier = following[:5000]
+                        else:
+                            following.append((row["to"], path, days, arrive,
+                                              visited | {row["to"]}, nk))
+            frontier = following[:8000]
         dedup = {}
         for plan in plans:
             key = tuple((leg["train_no"], leg["from"], leg["to"], leg["date"]) for leg in plan["legs"])
             dedup.setdefault(key, plan)
         plans = list(dedup.values())
+    print("   中转枚举后方案: %d" % len(plans))
 
-    # ---- 1. 一程中转 ----
-    tele_O = {c for _, c in O}
-    for h in ([] if a.max_transfers >= 2 else hubs):
-        h_code = L.NAME.get(h)
-        if not h_code: continue
-        leg1s, leg2s = [], []
+    # ---- 2. 直达拆票: 对售罄直达车全区间尝试 (a,b) ----
+    print(">> 直达拆票扫描(买短乘长/买长乘短/买长又买短) ...")
+    pool_direct = sorted((r for r in direct_rows if not has_seat(r, a.people)),
+                         key=lambda x: lishi_min(x["lishi"]))
+    for r in pool_direct[:8]:
+        if a.max_queries - BUDGET["n"] <= FARES_RESERVE + 10: break
         try:
-            for w_date, w_from, w_to in windows:
-                for r in query_edge(w_date, o_code, h_code):
-                    if w_from <= r["dep"] <= w_to and has_seat(r):
-                        r2 = dict(r); r2["_date"] = w_date; leg1s.append(r2)
-            for w_date, w_from, w_to in windows:
-                for r in query_edge(w_date, h_code, d_code):
-                    if w_from <= r["dep"] <= w_to and has_seat(r):
-                        r2 = dict(r); r2["_date"] = w_date; leg2s.append(r2)
-        except RuntimeError as e:
-            print("  预算耗尽于 hub", h); break
-        for l1 in leg1s:
-            d1 = dep_dt(l1["_date"], l1["dep"]); a1 = arr_dt(d1, lishi_min(l1["lishi"]))
-            if a1 > deadline: continue
-            buf_need = 15
-            for l2 in leg2s:
-                d2 = dep_dt(l2["_date"], l2["dep"])
-                buf = int((d2 - a1).total_seconds() // 60)
-                if buf < buf_need: continue
-                if l1["to"] != l2["from"]: continue
-                a2 = arr_dt(d2, lishi_min(l2["lishi"]))
-                if a2 > deadline: continue
-                p = make_plan("中转", [leg_info(l1, l1["_date"]), leg_info(l2, l2["_date"])],
-                              [l1["_date"], l2["_date"]])
-                if p: plans.append(p)
-    print("   一程中转后方案总数: %d" % len(plans))
-
-    # ---- 2. 买短乘长(直达车次的分段拆票+车上补票) ----
-    tried = 0
-    for r in sorted(direct_rows, key=lambda x: (x["buy"] == "Y", lishi_min(x["lishi"]))):
-        if tried >= 5 or BUDGET["n"] >= a.max_queries - 20: break
-        if r["buy"] == "Y" and has_seat(r): continue  # 直达本来就有票就不用拆
-        try:
-            stops = sched(r["train_no"], r["from"], r["to"], r["_date"], a.max_queries)
+            seq = train_stops(r["train_no"], r["from"], r["to"], r["_date"])
         except Exception:
             continue
-        seq = [s["station"] for s in stops]
         try:
-            i0, i1 = seq.index(r["from"]), seq.index(r["to"])
+            ib = seq.index(L.STATION.get(r["from"], r["from"]))
+            iq = seq.index(L.STATION.get(r["to"], r["to"]))
         except ValueError:
             continue
-        mids = seq[i0 + 1: i1]
-        if not mids: continue
-        for split in {mids[-1], mids[len(mids) // 2]}:
-            s_code = L.NAME.get(split)
-            if not s_code: continue
+        board_cn = L.STATION.get(r["from"], r["from"])
+        alight_cn = L.STATION.get(r["to"], r["to"])
+        for ai, bi in split_candidates(seq, ib, iq, 8):
+            if a.max_queries - BUDGET["n"] <= FARES_RESERVE: break
             try:
-                short = tickets(r["_date"], r["from"], s_code, a.max_queries)
+                got = attempt_split_leg(r, r["_date"], seq, ai, bi)
             except RuntimeError:
                 break
-            hit = [x for x in short if x["code"] == r["code"] and x["dep"] == r["dep"] and has_seat(x)]
-            if not hit: continue
-            x = hit[0]
-            leg1 = leg_info(x, r["_date"])
-            # 第2段在车上补票(无需票)
-            dep = dep_dt(r["_date"], r["dep"]); arr = arr_dt(dep, lishi_min(r["lishi"]))
-            if arr > deadline: continue
-            p = make_plan("买短乘长", [leg1], [r["_date"]],
-                          notes=["%s→%s 区间需车上找列车长补票(无座,按公布票价)" % (split, L.STATION.get(r["to"], r["to"]))],
-                          buy_short_info={"split": split, "rest": "%s→%s" % (split, L.STATION.get(r["to"], r["to"]))})
-            if p:
-                p["arr_dt"] = arr.isoformat(sep=" ")
-                p["duration_min"] = int((arr - dep).total_seconds() // 60)
-                p["buy_short"]["arrival"] = p["arr_dt"]
-                plans.append(p); tried += 1
-            break
-    print("   买短乘长候选: %d" % sum(1 for p in plans if p["type"] == "买短乘长"))
+            if not got: continue
+            leg, a_name, b_name = got
+            kind = classify_split(ai, bi, ib, iq)
+            p = make_plan(kind, [leg], [r["_date"]],
+                          notes=split_notes(a_name, b_name, board_cn, alight_cn, ai, bi, ib, iq),
+                          buy_short_info=({"split": b_name, "rest": "%s→%s" % (b_name, alight_cn)}
+                                          if bi < iq else None),
+                          ext_info=({"beyond": b_name} if bi > iq else None))
+            if p: plans.append(p)
+    print("   拆票后方案总数: %d" % len(plans))
 
-    # ---- 3. 买长乘短(买到目的地下一站, 提前下车) ----
-    tried = 0
-    for r in sorted(direct_rows, key=lambda x: lishi_min(x["lishi"])):
-        if tried >= 5 or BUDGET["n"] >= a.max_queries - 20: break
-        if r["end"] == r["to"]: continue
-        try:
-            stops = sched(r["train_no"], r["from"], r["to"], r["_date"], a.max_queries)
-        except Exception:
-            continue
-        seq = [s["station"] for s in stops]
-        if r["to"] not in seq or seq[-1] == r["to"]: continue
-        d_next = seq[seq.index(r["to"]) + 1]
-        n_code = L.NAME.get(d_next)
-        if not n_code: continue
-        try:
-            longer = tickets(r["_date"], r["from"], n_code, a.max_queries)
-        except RuntimeError:
-            break
-        hit = [x for x in longer if x["code"] == r["code"] and x["dep"] == r["dep"] and has_seat(x)]
-        if not hit: continue
-        x = hit[0]
-        dep = dep_dt(r["_date"], r["dep"]); arr = arr_dt(dep, lishi_min(r["lishi"]))
-        if arr > deadline: continue
-        leg = leg_info(x, r["_date"]); leg["alight_cn"] = L.STATION.get(r["to"], r["to"])
-        p = make_plan("买长乘短", [leg], [r["_date"]],
-                      notes=["票面买到 %s, 在 %s 提前下车(差价不退)" % (d_next, L.STATION.get(r["to"], r["to"]))],
-                      ext_info={"beyond": d_next})
-        if p:
-            p["arr_dt"] = arr.isoformat(sep=" ")
-            p["duration_min"] = int((arr - dep).total_seconds() // 60)
-            plans.append(p); tried += 1
-    print("   买长乘短候选: %d" % sum(1 for p in plans if p["type"] == "买长乘短"))
+    # ---- 3. 中转链拆票救援: 售罄的 o→h / h→d 边按拆票重建一程中转 ----
+    print(">> 中转链拆票救援 ...")
+    d_cluster = city_cluster.get(d_code, (d_code,))
+    o_cluster = city_cluster.get(o_code, (o_code,))
+    rescue_used = 0
+    def rescue_budget():
+        return a.max_queries - BUDGET["n"] > FARES_RESERVE - 10 and rescue_used < 24
 
+    def rescue_edge_pool(predicate):
+        items = [(k, v) for k, v in soldout.items() if predicate(k) and v]
+        return sorted(items, key=lambda kv: lishi_min(kv[1][0][0]["lishi"]))
+
+    def indices_of(full, day):
+        try:
+            seq = train_stops(full["train_no"], full["from"], full["to"], day)
+            ib = seq.index(L.STATION.get(full["from"], full["from"]))
+            iq = seq.index(L.STATION.get(full["to"], full["to"]))
+            return seq, ib, iq
+        except (Exception, ValueError):
+            return None, None, None
+
+    # 3a 终点方向售罄(h→d): 前缀取已装载的 o→h 可用行
+    for (src, dst), pool in rescue_edge_pool(lambda k: k[1] == d_code or k[1] in d_cluster):
+        if not rescue_budget(): break
+        for full, day in pool[:1]:
+            if not rescue_budget(): break
+            seq, ib, iq = indices_of(full, day)
+            if seq is None: continue
+            src_cn = L.STATION.get(full["from"], full["from"])
+            dst_cn = L.STATION.get(full["to"], full["to"])
+            made = 0
+            for ai, bi in split_candidates(seq, ib, iq, 4):
+                if not rescue_budget(): break
+                try:
+                    got = attempt_split_leg(full, day, seq, ai, bi)
+                except RuntimeError:
+                    break
+                rescue_used += 1
+                if not got: continue
+                leg2, a_name, b_name = got
+                notes = split_notes(a_name, b_name, src_cn, dst_cn, ai, bi, ib, iq)
+                for member in city_cluster.get(o_code, (o_code,)):
+                    if made >= 6: break
+                    for row1, day1, dep1, arr1 in adjacency.get(member, []):
+                        if made >= 6: break
+                        if row1["to"] != src and row1["to"] not in city_cluster.get(src, ()):
+                            continue
+                        p = make_plan("中转", [leg_info(row1, day1), leg2], [day1, day],
+                                      city_cluster=city_cluster)
+                        if not p: continue
+                        p["notes"] = p.get("notes", []) + notes
+                        if bi < iq:
+                            p["buy_short"] = {"split": b_name, "rest": "%s→%s" % (b_name, dst_cn)}
+                        plans.append(p); made += 1
+
+    # 3b 出发方向售罄(o→h): 后段取已装载的 h→d 可用行
+    for (src, dst), pool in rescue_edge_pool(
+            lambda k: (k[0] == o_code or k[0] in o_cluster)
+            and not (k[1] == d_code or k[1] in d_cluster)):
+        if not rescue_budget(): break
+        for full, day in pool[:1]:
+            if not rescue_budget(): break
+            seq, ib, iq = indices_of(full, day)
+            if seq is None: continue
+            src_cn = L.STATION.get(full["from"], full["from"])
+            dst_cn = L.STATION.get(full["to"], full["to"])
+            made = 0
+            for ai, bi in split_candidates(seq, ib, iq, 4):
+                if not rescue_budget(): break
+                try:
+                    got = attempt_split_leg(full, day, seq, ai, bi)
+                except RuntimeError:
+                    break
+                rescue_used += 1
+                if not got: continue
+                leg1, a_name, b_name = got
+                notes = split_notes(a_name, b_name, src_cn, dst_cn, ai, bi, ib, iq)
+                for member in city_cluster.get(dst, (dst,)):
+                    if made >= 6: break
+                    for row2, day2, dep2, arr2 in adjacency.get(member, []):
+                        if made >= 6: break
+                        if row2["to"] != d_code and row2["to"] not in d_cluster:
+                            continue
+                        p = make_plan("中转", [leg1, leg_info(row2, day2)], [day, day2],
+                                      city_cluster=city_cluster)
+                        if not p: continue
+                        p["notes"] = p.get("notes", []) + notes
+                        if bi < iq:
+                            p["buy_short"] = {"split": b_name, "rest": "%s→%s" % (b_name, dst_cn)}
+                        plans.append(p); made += 1
+    print("   救援后方案总数: %d" % len(plans))
+
+    # ---- 4. 核价(按唯一票段去重复用) ----
     def fetch_fare(leg):
         qbudget(a.max_queries)
         return L.price(leg["train_no"], leg["qfrom"], leg["qto"], leg["seat_types"], leg["date"])
@@ -516,6 +626,10 @@ def main():
                             lambda: a.max_queries - BUDGET["n"], retry_fare)
     print("   票价: %d 个唯一票段, %d 次查询, %d/%d 方案完整核价" %
           (summary["unique_legs"], summary["requests"], summary["priced_plans"], len(plans)))
+
+    # ---- 5. Pareto 过滤 + 展示字段 ----
+    plans = pareto_filter(plans)
+    print(">> Pareto 过滤后 %d 个方案" % len(plans))
     for p in plans:
         p["comfort"] = comfort_score(p, a.people)
         p["over_budget"] = bool(a.budget is not None and p["price_pp"] is not None
